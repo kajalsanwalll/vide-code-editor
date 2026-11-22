@@ -1,5 +1,5 @@
-import { type NextRequest, NextResponse } from "next/server";
 
+import { type NextRequest, NextResponse } from "next/server";
 
 interface CodeSuggestionRequest {
   fileContent: string;
@@ -26,13 +26,34 @@ export async function POST(request: NextRequest) {
   try {
     const body: CodeSuggestionRequest = await request.json();
 
-    const { fileContent, cursorLine, cursorColumn, suggestionType, fileName } =
-      body;
+    const {
+      fileContent,
+      cursorLine,
+      cursorColumn,
+      suggestionType,
+      fileName,
+    } = body;
 
     // Validate input
-    if (!fileContent || cursorLine < 0 || cursorColumn < 0 || !suggestionType) {
+    if (
+      typeof fileContent !== "string" ||
+      typeof cursorLine !== "number" ||
+      typeof cursorColumn !== "number" ||
+      cursorLine < 0 ||
+      cursorColumn < 0 ||
+      !suggestionType
+    ) {
       return NextResponse.json(
         { error: "Invalid input parameters" },
+        { status: 400 }
+      );
+    }
+
+    const lines = fileContent.split("\n");
+
+    if (cursorLine >= lines.length) {
+      return NextResponse.json(
+        { error: "Cursor line is outside the file content" },
         { status: 400 }
       );
     }
@@ -59,17 +80,17 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error: unknown) {
-  console.error("Context analysis error:", error);
+    console.error("Context analysis error:", error);
 
-  return NextResponse.json(
-    {
-      error: "Internal server error",
-      message:
-        error instanceof Error
-          ? error.message
-          : "An unexpected error occurred",
-    },
-    { status: 500 }
+    return NextResponse.json(
+      {
+        error: "Internal server error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "An unexpected error occurred",
+      },
+      { status: 500 }
     );
   }
 }
@@ -86,7 +107,7 @@ function analyzeCodeContext(
   // Get surrounding context (10 lines before and after)
   const contextRadius = 10;
   const startLine = Math.max(0, line - contextRadius);
-  const endLine = Math.min(lines.length, line + contextRadius);
+  const endLine = Math.min(lines.length, line + contextRadius + 1);
 
   const beforeContext = lines.slice(startLine, line).join("\n");
   const afterContext = lines.slice(line + 1, endLine).join("\n");
@@ -99,7 +120,10 @@ function analyzeCodeContext(
   const isInFunction = detectInFunction(lines, line);
   const isInClass = detectInClass(lines, line);
   const isAfterComment = detectAfterComment(currentLine, column);
-  const incompletePatterns = detectIncompletePatterns(currentLine, column);
+  const incompletePatterns = detectIncompletePatterns(
+    currentLine,
+    column
+  );
 
   return {
     language,
@@ -115,75 +139,127 @@ function analyzeCodeContext(
   };
 }
 
-function buildPrompt(context: CodeContext, suggestionType: string): string {
-  return `You are an expert code completion assistant. Generate a ${suggestionType} suggestion.
+function buildPrompt(
+  context: CodeContext,
+  suggestionType: string
+): string {
+  return `You are an expert code completion assistant integrated into Vide Code Editor.
+
+Generate a ${suggestionType} suggestion.
 
 Language: ${context.language}
 Framework: ${context.framework}
 
-Context:
+Code context:
+
 ${context.beforeContext}
+
 ${context.currentLine.substring(
   0,
   context.cursorPosition.column
-)}|CURSOR|${context.currentLine.substring(context.cursorPosition.column)}
+)}|CURSOR|${context.currentLine.substring(
+    context.cursorPosition.column
+  )}
+
 ${context.afterContext}
 
 Analysis:
-- In Function: ${context.isInFunction}
-- In Class: ${context.isInClass}
+- Inside Function: ${context.isInFunction}
+- Inside Class: ${context.isInClass}
 - After Comment: ${context.isAfterComment}
-- Incomplete Patterns: ${context.incompletePatterns.join(", ") || "None"}
+- Incomplete Patterns: ${
+    context.incompletePatterns.join(", ") || "None"
+  }
 
 Instructions:
-1. Provide only the code that should be inserted at the cursor
-2. Maintain proper indentation and style
-3. Follow ${context.language} best practices
-4. Make the suggestion contextually appropriate
+1. Provide ONLY the code that should be inserted at the cursor.
+2. Do not repeat code that already exists before or after the cursor.
+3. Do not include explanations or conversational text.
+4. Do not wrap the suggestion in Markdown code fences.
+5. Maintain the existing indentation and coding style.
+6. Follow ${context.language} best practices.
+7. Respect the existing ${context.framework} framework and project context.
+8. Make the suggestion concise and contextually appropriate.
+9. If the code is already complete, suggest the most useful next code.
 
-Generate suggestion:`;
+Generate the code suggestion:`;
 }
 
-async function generateSuggestion(prompt: string): Promise<string> {
+async function generateSuggestion(
+  prompt: string
+): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    console.error("GEMINI_API_KEY is not configured");
+    return "// Gemini API key is not configured";
+  }
+
   try {
-    const response = await fetch("http://localhost:11434/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "codellama:latest",
-        prompt,
-        stream: false,
-        option: {
-          temperature: 0.7,
-          max_tokens: 300,
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
         },
-      }),
-    });
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: prompt }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 300,
+          },
+        }),
+      }
+    );
 
-       if (!response.ok) {
-      throw new Error(`AI service error: ${response.statusText}`)
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Gemini API error:", data);
+
+      throw new Error(
+        data.error?.message || "Gemini API request failed"
+      );
     }
 
-      const data = await response.json()
-    let suggestion = data.response
+    let suggestion =
+      data.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part.text || "")
+        .join("") || "";
 
-     // Clean up the suggestion
-    if (suggestion.includes("```")) {
-      const codeMatch = suggestion.match(/```[\w]*\n?([\s\S]*?)```/)
-      suggestion = codeMatch ? codeMatch[1].trim() : suggestion
+    if (!suggestion.trim()) {
+      return "// No suggestion generated";
     }
 
-    return suggestion
+    // Remove Markdown code fences if Gemini includes them
+    suggestion = suggestion
+      .replace(/^```[\w-]*\s*\n?/, "")
+      .replace(/\n?```\s*$/, "")
+      .trim();
+
+    return suggestion;
   } catch (error) {
-      console.error("AI generation error:", error)
-    return "// AI suggestion unavailable"
+    console.error("Gemini code completion error:", error);
+    return "// AI suggestion unavailable";
   }
 }
 
 // Helper functions for code analysis
-function detectLanguage(content: string, fileName?: string): string {
+
+function detectLanguage(
+  content: string,
+  fileName?: string
+): string {
   if (fileName) {
     const ext = fileName.split(".").pop()?.toLowerCase();
+
     const extMap: Record<string, string> = {
       ts: "TypeScript",
       tsx: "TypeScript",
@@ -194,67 +270,186 @@ function detectLanguage(content: string, fileName?: string): string {
       go: "Go",
       rs: "Rust",
       php: "PHP",
+      c: "C",
+      h: "C",
+      cpp: "C++",
+      cc: "C++",
+      cxx: "C++",
+      hpp: "C++",
+      cs: "C#",
+      rb: "Ruby",
+      swift: "Swift",
+      kt: "Kotlin",
+      sql: "SQL",
+      html: "HTML",
+      css: "CSS",
+      json: "JSON",
+      sh: "Shell",
+      bash: "Shell",
     };
-    if (ext && extMap[ext]) return extMap[ext];
+
+    if (ext && extMap[ext]) {
+      return extMap[ext];
+    }
   }
 
   // Content-based detection
-  if (content.includes("interface ") || content.includes(": string"))
+  if (
+    content.includes("interface ") ||
+    content.includes(": string") ||
+    content.includes(": number")
+  ) {
     return "TypeScript";
-  if (content.includes("def ") || content.includes("import ")) return "Python";
-  if (content.includes("func ") || content.includes("package ")) return "Go";
+  }
+
+  if (content.includes("def ") || content.includes("import ")) {
+    return "Python";
+  }
+
+  if (content.includes("func ") || content.includes("package ")) {
+    return "Go";
+  }
+
+  if (
+    content.includes("#include") ||
+    content.includes("std::") ||
+    content.includes("int main(")
+  ) {
+    return "C++";
+  }
 
   return "JavaScript";
 }
 
 function detectFramework(content: string): string {
-  if (content.includes("import React") || content.includes("useState"))
+  if (
+    content.includes("import React") ||
+    content.includes("useState") ||
+    content.includes("useEffect")
+  ) {
+    if (
+      content.includes("next/") ||
+      content.includes("getServerSideProps")
+    ) {
+      return "Next.js";
+    }
+
     return "React";
-  if (content.includes("import Vue") || content.includes("<template>"))
+  }
+
+  if (
+    content.includes("import Vue") ||
+    content.includes("<template>")
+  ) {
     return "Vue";
-  if (content.includes("@angular/") || content.includes("@Component"))
+  }
+
+  if (
+    content.includes("@angular/") ||
+    content.includes("@Component")
+  ) {
     return "Angular";
-  if (content.includes("next/") || content.includes("getServerSideProps"))
+  }
+
+  if (
+    content.includes("next/") ||
+    content.includes("getServerSideProps")
+  ) {
     return "Next.js";
+  }
+
+  if (
+    content.includes("express()") ||
+    content.includes("require('express')") ||
+    content.includes('require("express")')
+  ) {
+    return "Express";
+  }
 
   return "None";
 }
 
-function detectInFunction(lines: string[], currentLine: number): boolean {
+function detectInFunction(
+  lines: string[],
+  currentLine: number
+): boolean {
   for (let i = currentLine - 1; i >= 0; i--) {
     const line = lines[i];
-    if (line?.match(/^\s*(function|def|const\s+\w+\s*=|let\s+\w+\s*=)/))
+
+    if (
+      line?.match(
+        /^\s*(function|def|const\s+\w+\s*=|let\s+\w+\s*=)/
+      )
+    ) {
       return true;
-    if (line?.match(/^\s*}/)) break;
+    }
+
+    if (line?.match(/^\s*}/)) {
+      break;
+    }
   }
+
   return false;
 }
 
-function detectInClass(lines: string[], currentLine: number): boolean {
+function detectInClass(
+  lines: string[],
+  currentLine: number
+): boolean {
   for (let i = currentLine - 1; i >= 0; i--) {
     const line = lines[i];
-    if (line?.match(/^\s*(class|interface)\s+/)) return true;
+
+    if (line?.match(/^\s*(class|interface)\s+/)) {
+      return true;
+    }
   }
+
   return false;
 }
 
-function detectAfterComment(line: string, column: number): boolean {
+function detectAfterComment(
+  line: string,
+  column: number
+): boolean {
   const beforeCursor = line.substring(0, column);
-  return /\/\/.*$/.test(beforeCursor) || /#.*$/.test(beforeCursor);
+
+  return (
+    /\/\/.*$/.test(beforeCursor) ||
+    /#.*$/.test(beforeCursor)
+  );
 }
 
-function detectIncompletePatterns(line: string, column: number): string[] {
+function detectIncompletePatterns(
+  line: string,
+  column: number
+): string[] {
   const beforeCursor = line.substring(0, column);
+  const trimmed = beforeCursor.trim();
   const patterns: string[] = [];
 
-  if (/^\s*(if|while|for)\s*\($/.test(beforeCursor.trim()))
+  if (/^(if|while|for)\s*\($/.test(trimmed)) {
     patterns.push("conditional");
-  if (/^\s*(function|def)\s*$/.test(beforeCursor.trim()))
+  }
+
+  if (/^(function|def)\s*$/.test(trimmed)) {
     patterns.push("function");
-  if (/\{\s*$/.test(beforeCursor)) patterns.push("object");
-  if (/\[\s*$/.test(beforeCursor)) patterns.push("array");
-  if (/=\s*$/.test(beforeCursor)) patterns.push("assignment");
-  if (/\.\s*$/.test(beforeCursor)) patterns.push("method-call");
+  }
+
+  if (/\{\s*$/.test(beforeCursor)) {
+    patterns.push("object");
+  }
+
+  if (/\[\s*$/.test(beforeCursor)) {
+    patterns.push("array");
+  }
+
+  if (/=\s*$/.test(beforeCursor)) {
+    patterns.push("assignment");
+  }
+
+  if (/\.\s*$/.test(beforeCursor)) {
+  patterns.push("method-call");
+}
 
   return patterns;
 }
