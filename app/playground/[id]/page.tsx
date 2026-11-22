@@ -64,6 +64,27 @@ const MainPlaygroundPage = () => {
   const { playgroundData, templateData, isLoading, error, saveTemplateData } =
     usePlayground(id);
 
+    useEffect(() => {
+  if (!templateData) return;
+
+  console.log("[PLAYGROUND DEBUG]", {
+    playgroundId: id,
+    playgroundTitle: playgroundData?.title,
+    templateFolder: templateData.folderName,
+    rootItems: templateData.items.map((item) =>
+      "folderName" in item
+        ? `📁 ${item.folderName}`
+        : `📄 ${item.filename}.${item.fileExtension}`
+    ),
+    hasPackageJson: templateData.items.some(
+      (item) =>
+        !("folderName" in item) &&
+        item.filename === "package" &&
+        item.fileExtension === "json"
+    ),
+  });
+}, [id, playgroundData, templateData]);
+
     const aiSuggestions = useAISuggestions();
 
   const {

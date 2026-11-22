@@ -1,3 +1,4 @@
+
 import type {
   TemplateFile,
   TemplateFolder,
@@ -16,11 +17,18 @@ interface WebContainerDirectory {
   };
 }
 
-type WebContainerNode = WebContainerFile | WebContainerDirectory;
+type WebContainerNode =
+  | WebContainerFile
+  | WebContainerDirectory;
 
-type WebContainerFileSystem = Record<string, WebContainerNode>;
+type WebContainerFileSystem = Record<
+  string,
+  WebContainerNode
+>;
 
-function isTemplateFolder(item: TemplateItem): item is TemplateFolder {
+function isTemplateFolder(
+  item: TemplateItem
+): item is TemplateFolder {
   return "folderName" in item;
 }
 
@@ -34,18 +42,45 @@ function getItemName(item: TemplateItem): string {
     : item.filename;
 }
 
+function validateTemplateFile(
+  item: TemplateFile,
+  name: string
+) {
+  if (
+    typeof item.filename !== "string" ||
+    typeof item.content !== "string"
+  ) {
+    throw new Error(
+      `Invalid template file: ${name}`
+    );
+  }
+
+  if (
+    name.includes("/") ||
+    name.includes("\\") ||
+    name === "." ||
+    name === ".."
+  ) {
+    throw new Error(
+      `Invalid template filename: ${name}`
+    );
+  }
+}
+
 export function transformToWebContainerFormat(
   template: TemplateFolder
 ): WebContainerFileSystem {
-  if (!template || !Array.isArray(template.items)) {
-    throw new Error("Invalid template structure received.");
+  if (
+    !template ||
+    !Array.isArray(template.items)
+  ) {
+    throw new Error(
+      "Invalid template structure received."
+    );
   }
-
-  console.time("Template transformation");
 
   const result: WebContainerFileSystem = {};
 
-  // Use an iterative approach instead of recursive calls.
   const stack: {
     items: TemplateItem[];
     target: WebContainerFileSystem;
@@ -65,17 +100,39 @@ export function transformToWebContainerFormat(
     for (const item of current.items) {
       const name = getItemName(item);
 
-      if (!name) {
-        throw new Error("Template contains an item with an empty name.");
+      if (!name || typeof name !== "string") {
+        throw new Error(
+          "Template contains an item with an empty name."
+        );
       }
 
-      if (name in current.target) {
-        throw new Error(`Duplicate template item: ${name}`);
+      if (
+        name.includes("/") ||
+        name.includes("\\") ||
+        name === "." ||
+        name === ".."
+      ) {
+        throw new Error(
+          `Invalid template path: ${name}`
+        );
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(
+          current.target,
+          name
+        )
+      ) {
+        throw new Error(
+          `Duplicate template item: ${name}`
+        );
       }
 
       if (isTemplateFolder(item)) {
         if (!Array.isArray(item.items)) {
-          throw new Error(`Invalid folder structure: ${name}`);
+          throw new Error(
+            `Invalid folder structure: ${name}`
+          );
         }
 
         const directory: WebContainerDirectory = {
@@ -91,9 +148,7 @@ export function transformToWebContainerFormat(
 
         processedFolders++;
       } else {
-        if (typeof item.content !== "string") {
-          throw new Error(`Invalid file content: ${name}`);
-        }
+        validateTemplateFile(item, name);
 
         current.target[name] = {
           file: {
@@ -106,12 +161,27 @@ export function transformToWebContainerFormat(
     }
   }
 
-  console.log("Template transformation complete:", {
-    files: processedFiles,
-    folders: processedFolders,
-  });
+  const rootFiles = Object.keys(result);
 
-  console.timeEnd("Template transformation");
+  const hasPackageJson =
+    rootFiles.includes("package.json");
+
+  console.log(
+    "[TRANSFORMER] Transformation complete:",
+    {
+      folderName: template.folderName,
+      files: processedFiles,
+      folders: processedFolders,
+      rootFiles,
+      hasPackageJson,
+    }
+  );
+
+  if (!hasPackageJson) {
+    console.warn(
+      "[TRANSFORMER] No root package.json found. Check which template was supplied."
+    );
+  }
 
   return result;
 }

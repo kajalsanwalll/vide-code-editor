@@ -311,9 +311,12 @@ export const PlaygroundEditor = ({
         },
 
         // Monaco 0.55.1 required cleanup method
-        freeInlineCompletions: (_completions: any) => {
-          // No external resources need to be released.
-        },
+        disposeInlineCompletions: (
+  _completions: any,
+  _reason: any
+) => {
+  // No external resources need to be released.
+},
       }
     },
     [],

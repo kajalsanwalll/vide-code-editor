@@ -40,12 +40,37 @@ export const usePlayground = (id: string): UsePlaygroundReturn => {
       setPlaygroundData(data);
       const rawContent = data?.templateFiles?.[0]?.content;
 
-      if (typeof rawContent === "string") {
-        const parsedContent = JSON.parse(rawContent);
-        setTemplateData(parsedContent);
-        toast.success("playground loaded successfully");
-        return;
-      }
+if (typeof rawContent === "string") {
+  const parsedContent = JSON.parse(rawContent);
+
+  console.log("[SAVED TEMPLATE DEBUG]", {
+    playgroundId: id,
+    playgroundTitle: data?.title,
+    totalTemplateFiles: data?.templateFiles?.length,
+    firstTemplateFile: data?.templateFiles?.[0],
+    parsedFolderName: parsedContent?.folderName,
+    parsedRootItems: parsedContent?.items?.map((item: any) =>
+      "folderName" in item
+        ? `FOLDER: ${item.folderName}`
+        : `FILE: ${item.filename}.${item.fileExtension}`
+    ),
+    isValidStructure:
+      typeof parsedContent?.folderName === "string" &&
+      Array.isArray(parsedContent?.items),
+  });
+
+  if (
+    typeof parsedContent?.folderName === "string" &&
+    Array.isArray(parsedContent?.items)
+  ) {
+    setTemplateData(parsedContent);
+    toast.success("Playground loaded successfully");
+    return;
+  }
+
+  console.error("Saved template is not a valid TemplateFolder:", parsedContent);
+  throw new Error("Invalid saved template structure");
+}
 
       //   load template from api if not in saved content
 

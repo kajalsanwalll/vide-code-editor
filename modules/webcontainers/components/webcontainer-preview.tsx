@@ -3,10 +3,14 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import { transformToWebContainerFormat } from "../hooks/transformer";
-import { CheckCircle, Loader2, XCircle } from "lucide-react";
+import {
+  CheckCircle,
+  Loader2,
+  XCircle,
+} from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { WebContainer } from "@webcontainer/api";
-import { TemplateFolder } from "@/modules/playground/lib/path-to-json";
+import type { TemplateFolder } from "@/modules/playground/lib/path-to-json";
 
 interface WebContainerPreviewProps {
   templateData: TemplateFolder;
@@ -14,8 +18,72 @@ interface WebContainerPreviewProps {
   isLoading: boolean;
   error: string | null;
   instance: WebContainer | null;
-  writeFileSync: (path: string, content: string) => Promise<void>;
+  writeFileSync: (
+    path: string,
+    content: string
+  ) => Promise<void>;
   forceResetup?: boolean;
+}
+
+// Find package.json at the root or inside a nested project folder.
+async function findPackageJsonDirectory(
+  instance: WebContainer,
+  directory = "/"
+): Promise<string | null> {
+  try {
+    await instance.fs.readFile(
+      directory === "/" ? "/package.json" : `${directory}/package.json`,
+      "utf8"
+    );
+
+    return directory;
+  } catch {
+    // Continue searching.
+  }
+
+  let entries: string[];
+
+  try {
+    entries = await instance.fs.readdir(directory);
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    if (
+      entry === "node_modules" ||
+      entry === ".git" ||
+      entry === ".next"
+    ) {
+      continue;
+    }
+
+    const childPath =
+      directory === "/" ? `/${entry}` : `${directory}/${entry}`;
+
+    const result = await findPackageJsonDirectory(
+      instance,
+      childPath
+    );
+
+    if (result !== null) return result;
+  }
+
+  return null;
+}
+
+// Remove existing files before mounting a different playground.
+async function clearWebContainer(instance: WebContainer) {
+  const entries = await instance.fs.readdir("/");
+
+  for (const entry of entries) {
+    if (entry === "." || entry === "..") continue;
+
+    await instance.fs.rm(`/${entry}`, {
+      recursive: true,
+      force: true,
+    });
+  }
 }
 
 const WebContainerPreview = ({
@@ -26,6 +94,7 @@ const WebContainerPreview = ({
   forceResetup = false,
 }: WebContainerPreviewProps) => {
   const [previewUrl, setPreviewUrl] = useState("");
+
   const [loadingState, setLoadingState] = useState({
     transforming: false,
     mounting: false,
@@ -41,42 +110,55 @@ const WebContainerPreview = ({
   const totalSteps = 4;
 
   const [setupError, setSetupError] = useState<string | null>(null);
+
   const [isSetupComplete, setIsSetupComplete] = useState(false);
+  const [isStaticWorkspace, setIsStaticWorkspace] = useState(false);
 
   const isSetupInProgressRef = useRef(false);
   const terminalRef = useRef<any>(null);
+  const setupKeyRef = useRef<string | null>(null);
 
-  // Write to terminal
   const writeTerminal = (message: string) => {
     terminalRef.current?.writeToTerminal?.(message);
   };
 
-  // Reset setup state when forceResetup changes
+  // Reset setup state when the selected template changes.
   useEffect(() => {
-    if (forceResetup) {
-      setIsSetupComplete(false);
-      isSetupInProgressRef.current = false;
-      setSetupError(null);
-      setPreviewUrl("");
-      setCurrentStep(0);
+    if (!templateData) return;
 
-      setLoadingState({
-        transforming: false,
-        mounting: false,
-        installing: false,
-        starting: false,
-        ready: false,
-      });
+    const templateKey = JSON.stringify(templateData);
+
+    if (setupKeyRef.current === templateKey && !forceResetup) {
+      return;
     }
-  }, [forceResetup]);
 
-  // Main WebContainer setup
+    setupKeyRef.current = templateKey;
+    isSetupInProgressRef.current = false;
+
+    setIsSetupComplete(false);
+setIsStaticWorkspace(false);
+setSetupError(null);
+setPreviewUrl("");
+setCurrentStep(0);
+
+    setLoadingState({
+      transforming: false,
+      mounting: false,
+      installing: false,
+      starting: false,
+      ready: false,
+    });
+  }, [templateData, forceResetup]);
+
+  // Main WebContainer setup.
   useEffect(() => {
     let cancelled = false;
 
     async function setupContainer() {
       if (
         !instance ||
+        !templateData ||
+        isLoading ||
         isSetupComplete ||
         isSetupInProgressRef.current
       ) {
@@ -87,231 +169,172 @@ const WebContainerPreview = ({
 
       try {
         setSetupError(null);
+        setPreviewUrl("");
 
-        let packageJsonText: string | null = null;
-        let shouldInstall = true;
+        // STEP 1: Transform template.
+        setLoadingState((prev) => ({
+          ...prev,
+          transforming: true,
+        }));
 
-        // Check whether project files are already mounted
-        try {
-          packageJsonText = await instance.fs.readFile(
-            "package.json",
-            "utf8"
-          );
+        setCurrentStep(1);
 
-          writeTerminal(
-            "Existing project detected. Checking dependencies...\r\n"
-          );
+        writeTerminal("Transforming template data...\r\n");
 
-          // Check whether node_modules already exists
-          try {
-            await instance.fs.readdir("node_modules");
+        const files = transformToWebContainerFormat(templateData);
 
-            shouldInstall = false;
-
-            writeTerminal(
-              "Dependencies already exist. Skipping installation.\r\n"
-            );
-          } catch {
-            shouldInstall = true;
-
-            writeTerminal(
-              "Dependencies not found. Installation required.\r\n"
-            );
-          }
-        } catch {
-          packageJsonText = null;
-        }
-
-        // STEP 1: Transform template
-        if (!packageJsonText) {
-          setLoadingState((prev) => ({
-            ...prev,
-            transforming: true,
-          }));
-
-          setCurrentStep(1);
-
-          writeTerminal("Transforming template data...\r\n");
-          writeTerminal("Converting template structure...\r\n");
-
-          console.time("Transform template");
-
-          const files = transformToWebContainerFormat(templateData);
-
-          console.timeEnd("Transform template");
-
-          writeTerminal(
-            "Template transformation complete.\r\n"
-          );
-
-          console.log(
-            "Files prepared for mount:",
-            Object.keys(files)
-          );
-
-          if (cancelled) return;
-
-          // STEP 2: Mount files
-          setLoadingState((prev) => ({
-            ...prev,
-            transforming: false,
-            mounting: true,
-          }));
-
-          setCurrentStep(2);
-
-          writeTerminal(
-            "Mounting files to WebContainer...\r\n"
-          );
-
-          console.log("========== MOUNT DEBUG ==========");
-          console.log("MOUNT START");
-          console.log("Root files:", Object.keys(files));
-          console.log(
-            "Payload size:",
-            JSON.stringify(files).length,
-            "characters"
-          );
-          console.log(
-            "WebContainer instance exists:",
-            !!instance
-          );
-
-          console.time("WebContainer mount");
-
-          await instance.mount(files);
-
-          console.timeEnd("WebContainer mount");
-
-          console.log("MOUNT COMPLETE");
-          console.log("================================");
-
-          if (cancelled) return;
-
-          writeTerminal(
-            "Files mounted successfully.\r\n"
-          );
-
-          setLoadingState((prev) => ({
-            ...prev,
-            mounting: false,
-          }));
-
-          shouldInstall = true;
-        } else {
-          // Files already exist in WebContainer
-          setCurrentStep(2);
-
-          setLoadingState((prev) => ({
-            ...prev,
-            transforming: false,
-            mounting: false,
-          }));
-        }
-
-        // STEP 3: Install dependencies
-        if (shouldInstall) {
-          if (cancelled) return;
-
-          setLoadingState((prev) => ({
-            ...prev,
-            installing: true,
-          }));
-
-          setCurrentStep(3);
-
-          writeTerminal(
-            "\r\n========================================\r\n"
-          );
-          writeTerminal("Installing dependencies...\r\n");
-          writeTerminal("Running: npm install --verbose\r\n");
-          writeTerminal(
-            "========================================\r\n"
-          );
-
-          console.log("[NPM] Starting npm install...");
-          console.log("[NPM] Current directory: /");
-
-          const installProcess = await instance.spawn(
-            "npm",
-            ["install", "--verbose"]
-          );
-
-          // Capture npm output in both browser console and terminal
-          const outputPromise = installProcess.output.pipeTo(
-            new WritableStream({
-              write(data) {
-                console.log("[NPM INSTALL]", data);
-                writeTerminal(data);
-              },
-            })
-          );
-
-          // Wait for process and output stream
-          const installExitCode = await installProcess.exit;
-
-          await outputPromise;
-
-          console.log(
-            "[NPM] Installation exit code:",
-            installExitCode
-          );
-
-          writeTerminal(
-            `\r\nnpm install exited with code: ${installExitCode}\r\n`
-          );
-
-          if (cancelled) return;
-
-          if (installExitCode !== 0) {
-            throw new Error(
-              `Failed to install dependencies. Exit code: ${installExitCode}. Check [NPM INSTALL] logs in browser console.`
-            );
-          }
-
-          writeTerminal(
-            "Dependencies installed successfully!\r\n"
-          );
-        } else {
-          setLoadingState((prev) => ({
-            ...prev,
-            installing: false,
-          }));
-        }
+        console.log("[WEBCONTAINER] Prepared root files:", Object.keys(files));
 
         if (cancelled) return;
 
-        // STEP 4: Start development server
+        // STEP 2: Clear and mount the selected template.
         setLoadingState((prev) => ({
           ...prev,
           transforming: false,
+          mounting: true,
+        }));
+
+        setCurrentStep(2);
+
+        writeTerminal("Clearing previous project files...\r\n");
+
+        await clearWebContainer(instance);
+
+        if (cancelled) return;
+
+        writeTerminal("Mounting selected playground...\r\n");
+
+        console.log("========== MOUNT DEBUG ==========");
+        console.log("Template folder:", templateData.folderName);
+        console.log("Root files:", Object.keys(files));
+        console.log("Payload size:", JSON.stringify(files).length);
+        console.time("WebContainer mount");
+
+        await instance.mount(files);
+
+        console.timeEnd("WebContainer mount");
+
+        if (cancelled) return;
+
+        const rootFiles = await instance.fs.readdir("/");
+
+        console.log("[WEBCONTAINER] Mounted root files:", rootFiles);
+
+        writeTerminal("Files mounted successfully.\r\n");
+
+        setLoadingState((prev) => ({
+          ...prev,
           mounting: false,
+        }));
+
+        const projectRoot = await findPackageJsonDirectory(instance);
+
+if (!projectRoot) {
+  console.log(
+    "[WEBCONTAINER] No package.json found. Opening as a regular workspace."
+  );
+
+  writeTerminal(
+    "\r\nWorkspace opened successfully.\r\n" +
+    "No package.json detected. Skipping dependency installation and development server.\r\n"
+  );
+
+  setIsStaticWorkspace(true);
+  setIsSetupComplete(true);
+  isSetupInProgressRef.current = false;
+  setCurrentStep(2);
+
+  setLoadingState({
+    transforming: false,
+    mounting: false,
+    installing: false,
+    starting: false,
+    ready: false,
+  });
+
+  return;
+}
+
+console.log("[WEBCONTAINER] Project root:", projectRoot);
+
+        console.log("[WEBCONTAINER] Project root:", projectRoot);
+
+        // STEP 3: Install dependencies.
+        setLoadingState((prev) => ({
+          ...prev,
+          installing: true,
+        }));
+
+        setCurrentStep(3);
+
+        writeTerminal("\r\nInstalling dependencies...\r\n");
+        writeTerminal(`Project directory: ${projectRoot}\r\n`);
+
+        const installProcess = await instance.spawn(
+          "npm",
+          ["install", "--verbose"],
+          { cwd: projectRoot }
+        );
+
+        const npmLogs: string[] = [];
+
+        const outputPromise = installProcess.output.pipeTo(
+          new WritableStream({
+            write(data) {
+              const output = String(data);
+              npmLogs.push(output);
+              console.log("[NPM INSTALL]", output);
+              writeTerminal(output);
+            },
+          })
+        );
+
+        const installExitCode = await installProcess.exit;
+        await outputPromise;
+
+        try {
+  const debugLog = await instance.fs.readFile(
+    "/home/.npm/_logs/2026-11-22T15_40_17_259Z-debug-0.log",
+    "utf8"
+  );
+
+  console.log("========== FULL NPM DEBUG LOG ==========");
+  console.log(debugLog);
+  console.log("========== END NPM DEBUG LOG ==========");
+} catch (error) {
+  console.error("Unable to read npm debug log:", error);
+}
+
+        console.log("[NPM] Exit code:", installExitCode);
+
+        if (cancelled) return;
+
+        if (installExitCode !== 0) {
+          throw new Error(
+            `npm install failed with exit code ${installExitCode}.\n\nLast npm output:\n${npmLogs.join("").slice(-12000)}`
+          );
+        }
+
+        writeTerminal("Dependencies installed successfully!\r\n");
+
+        // STEP 4: Start development server.
+        setLoadingState((prev) => ({
+          ...prev,
           installing: false,
           starting: true,
         }));
 
         setCurrentStep(4);
 
-        writeTerminal(
-          "\r\nStarting development server...\r\n"
+        const packageJsonPath =
+          `${projectRoot === "/" ? "" : projectRoot}/package.json`;
+
+        const rawPackageJson = await instance.fs.readFile(
+          packageJsonPath,
+          "utf8"
         );
 
-        // Detect appropriate start script
-        let packageJson: any;
-
-        try {
-          const rawPackageJson = await instance.fs.readFile(
-            "package.json",
-            "utf8"
-          );
-
-          packageJson = JSON.parse(rawPackageJson);
-        } catch {
-          throw new Error(
-            "Unable to read or parse package.json."
-          );
-        }
-
+        const packageJson = JSON.parse(rawPackageJson);
         const scripts = packageJson.scripts || {};
 
         const startScript = scripts.dev
@@ -326,65 +349,55 @@ const WebContainerPreview = ({
           );
         }
 
-        writeTerminal(
-          `Running npm run ${startScript}...\r\n`
-        );
+        writeTerminal(`Running npm run ${startScript}...\r\n`);
 
-        // Listen before starting the process
-        instance.on(
-          "server-ready",
-          (port: number, url: string) => {
-            if (cancelled) return;
+        // Listen before starting the process.
+        const handleServerReady = (port: number, url: string) => {
+          if (cancelled) return;
 
-            writeTerminal(
-              `Server ready on port ${port}: ${url}\r\n`
-            );
+          console.log("[WEBCONTAINER] Server ready:", port, url);
 
-            setPreviewUrl(url);
+          writeTerminal(`Server ready on port ${port}: ${url}\r\n`);
 
-            setLoadingState({
-              transforming: false,
-              mounting: false,
-              installing: false,
-              starting: false,
-              ready: true,
-            });
+          setPreviewUrl(url);
 
-            setIsSetupComplete(true);
-            isSetupInProgressRef.current = false;
-          }
-        );
+          setLoadingState({
+            transforming: false,
+            mounting: false,
+            installing: false,
+            starting: false,
+            ready: true,
+          });
+
+          setIsSetupComplete(true);
+          isSetupInProgressRef.current = false;
+        };
+
+        instance.on("server-ready", handleServerReady);
 
         const startProcess = await instance.spawn(
           "npm",
-          ["run", startScript]
+          ["run", startScript],
+          { cwd: projectRoot }
         );
 
-        // Stream development server output
         startProcess.output
           .pipeTo(
             new WritableStream({
               write(data) {
                 console.log("[DEV SERVER]", data);
-                writeTerminal(data);
+                writeTerminal(String(data));
               },
             })
           )
           .catch((streamError) => {
-            console.error(
-              "Development server output error:",
-              streamError
-            );
+            console.error("Development server output error:", streamError);
           });
 
-        // Detect unexpected server exit
         startProcess.exit.then((exitCode) => {
           if (cancelled || exitCode === 0) return;
 
-          console.error(
-            "Development server exited with code:",
-            exitCode
-          );
+          console.error("Development server exited with code:", exitCode);
 
           setSetupError(
             `Development server exited with code ${exitCode}. Check terminal output.`
@@ -395,19 +408,12 @@ const WebContainerPreview = ({
       } catch (err) {
         if (cancelled) return;
 
-        console.error(
-          "Error setting up container:",
-          err
-        );
+        console.error("Error setting up container:", err);
 
         const errorMessage =
-          err instanceof Error
-            ? err.message
-            : String(err);
+          err instanceof Error ? err.message : String(err);
 
-        writeTerminal(
-          `\r\nERROR: ${errorMessage}\r\n`
-        );
+        writeTerminal(`\r\nERROR: ${errorMessage}\r\n`);
 
         setSetupError(errorMessage);
         isSetupInProgressRef.current = false;
@@ -426,19 +432,16 @@ const WebContainerPreview = ({
 
     return () => {
       cancelled = true;
-
-      if (!isSetupComplete) {
-        isSetupInProgressRef.current = false;
-      }
     };
   }, [
     instance,
     templateData,
+    isLoading,
     isSetupComplete,
     forceResetup,
   ]);
 
-  // Dynamically load terminal
+  // Dynamically load terminal.
   useEffect(() => {
     let mounted = true;
 
@@ -457,17 +460,15 @@ const WebContainerPreview = ({
     };
   }, []);
 
-  // Initial WebContainer loading screen
+  // Initial WebContainer loading screen.
   if (isLoading) {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="text-center space-y-4 max-w-md p-6 rounded-lg bg-gray-50 dark:bg-gray-900">
           <Loader2 className="h-10 w-10 animate-spin text-primary mx-auto" />
-
           <h3 className="text-lg font-medium">
             Initializing WebContainer
           </h3>
-
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Setting up the environment for your project...
           </p>
@@ -476,43 +477,36 @@ const WebContainerPreview = ({
     );
   }
 
-  // Error screen
+  // Error screen.
   if (error || setupError) {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 p-6 rounded-lg max-w-md">
           <div className="flex items-center gap-2 mb-3">
             <XCircle className="h-5 w-5" />
-
-            <h3 className="font-semibold">
-              Error
-            </h3>
+            <h3 className="font-semibold">Error</h3>
           </div>
 
-          <p className="text-sm">
+          <p className="text-sm whitespace-pre-wrap break-words">
             {error || setupError}
           </p>
 
           <div className="mt-4 text-xs opacity-80">
-            Check the terminal output and browser console for the detailed npm error.
+            Check the terminal output and browser console for the detailed error.
           </div>
         </div>
       </div>
     );
   }
 
-  // Step icons
+  // Step icons.
   const getStepIcon = (stepIndex: number) => {
     if (stepIndex < currentStep) {
-      return (
-        <CheckCircle className="h-5 w-5 text-green-500" />
-      );
+      return <CheckCircle className="h-5 w-5 text-green-500" />;
     }
 
     if (stepIndex === currentStep) {
-      return (
-        <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-      );
+      return <Loader2 className="h-5 w-5 animate-spin text-blue-500" />;
     }
 
     return (
@@ -520,11 +514,8 @@ const WebContainerPreview = ({
     );
   };
 
-  // Step labels
-  const getStepText = (
-    stepIndex: number,
-    label: string
-  ) => {
+  // Step labels.
+  const getStepText = (stepIndex: number, label: string) => {
     const isActive = stepIndex === currentStep;
     const isComplete = stepIndex < currentStep;
 
@@ -544,8 +535,41 @@ const WebContainerPreview = ({
   };
 
   return (
-    <div className="h-full w-full flex flex-col">
-      {!previewUrl ? (
+  <div className="h-full w-full flex flex-col">
+    {isStaticWorkspace ? (
+      <div className="h-full flex flex-col">
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="max-w-md text-center space-y-3">
+            <CheckCircle className="h-10 w-10 text-green-500 mx-auto" />
+
+            <h3 className="text-lg font-semibold">
+              Workspace Ready
+            </h3>
+
+            <p className="text-sm text-muted-foreground">
+              Your files are ready to edit. This workspace does not
+              contain a package.json, so no development server is
+              required.
+            </p>
+          </div>
+        </div>
+
+        <div className="h-64 border-t">
+          {TerminalComponent ? (
+            <TerminalComponent
+              ref={terminalRef}
+              webContainerInstance={instance}
+              theme="dark"
+              className="h-full"
+            />
+          ) : (
+            <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+              Loading terminal...
+            </div>
+          )}
+        </div>
+      </div>
+    ) : !previewUrl ? (
         <div className="h-full flex flex-col">
           <div className="w-full max-w-md p-6 m-5 rounded-lg bg-white dark:bg-zinc-800 shadow-sm mx-auto">
             <Progress
@@ -556,10 +580,7 @@ const WebContainerPreview = ({
             <div className="space-y-4 mb-6">
               <div className="flex items-center gap-3">
                 {getStepIcon(1)}
-                {getStepText(
-                  1,
-                  "Transforming template data"
-                )}
+                {getStepText(1, "Transforming template data")}
               </div>
 
               <div className="flex items-center gap-3">
@@ -574,10 +595,7 @@ const WebContainerPreview = ({
 
               <div className="flex items-center gap-3">
                 {getStepIcon(4)}
-                {getStepText(
-                  4,
-                  "Starting development server"
-                )}
+                {getStepText(4, "Starting development server")}
               </div>
             </div>
           </div>
