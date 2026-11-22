@@ -1,3 +1,4 @@
+
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
@@ -25,7 +26,6 @@ const WebContainerPreview = ({
   forceResetup = false,
 }: WebContainerPreviewProps) => {
   const [previewUrl, setPreviewUrl] = useState("");
-
   const [loadingState, setLoadingState] = useState({
     transforming: false,
     mounting: false,
@@ -43,13 +43,10 @@ const WebContainerPreview = ({
   const [setupError, setSetupError] = useState<string | null>(null);
   const [isSetupComplete, setIsSetupComplete] = useState(false);
 
-  // Use a ref instead of a state dependency to prevent the setup
-  // effect from cancelling itself when setup starts.
   const isSetupInProgressRef = useRef(false);
-
   const terminalRef = useRef<any>(null);
 
-  // Helper: Write messages to terminal
+  // Write to terminal
   const writeTerminal = (message: string) => {
     terminalRef.current?.writeToTerminal?.(message);
   };
@@ -78,7 +75,11 @@ const WebContainerPreview = ({
     let cancelled = false;
 
     async function setupContainer() {
-      if (!instance || isSetupComplete || isSetupInProgressRef.current) {
+      if (
+        !instance ||
+        isSetupComplete ||
+        isSetupInProgressRef.current
+      ) {
         return;
       }
 
@@ -98,7 +99,7 @@ const WebContainerPreview = ({
           );
 
           writeTerminal(
-            "🔄 Existing project detected. Checking dependencies...\r\n"
+            "Existing project detected. Checking dependencies...\r\n"
           );
 
           // Check whether node_modules already exists
@@ -108,13 +109,13 @@ const WebContainerPreview = ({
             shouldInstall = false;
 
             writeTerminal(
-              "✅ Dependencies already exist. Skipping installation.\r\n"
+              "Dependencies already exist. Skipping installation.\r\n"
             );
           } catch {
             shouldInstall = true;
 
             writeTerminal(
-              "📦 Dependencies not found. Installation required.\r\n"
+              "Dependencies not found. Installation required.\r\n"
             );
           }
         } catch {
@@ -130,8 +131,8 @@ const WebContainerPreview = ({
 
           setCurrentStep(1);
 
-          writeTerminal("🔄 Transforming template data...\r\n");
-          writeTerminal("🔄 Converting template structure...\r\n");
+          writeTerminal("Transforming template data...\r\n");
+          writeTerminal("Converting template structure...\r\n");
 
           console.time("Transform template");
 
@@ -139,7 +140,9 @@ const WebContainerPreview = ({
 
           console.timeEnd("Transform template");
 
-          writeTerminal("✅ Template transformation complete.\r\n");
+          writeTerminal(
+            "Template transformation complete.\r\n"
+          );
 
           console.log(
             "Files prepared for mount:",
@@ -158,7 +161,7 @@ const WebContainerPreview = ({
           setCurrentStep(2);
 
           writeTerminal(
-            "📁 Mounting files to WebContainer...\r\n"
+            "Mounting files to WebContainer...\r\n"
           );
 
           console.log("========== MOUNT DEBUG ==========");
@@ -169,19 +172,24 @@ const WebContainerPreview = ({
             JSON.stringify(files).length,
             "characters"
           );
-          console.log("WebContainer instance exists:", !!instance);
+          console.log(
+            "WebContainer instance exists:",
+            !!instance
+          );
+
           console.time("WebContainer mount");
 
           await instance.mount(files);
 
           console.timeEnd("WebContainer mount");
+
           console.log("MOUNT COMPLETE");
           console.log("================================");
 
           if (cancelled) return;
 
           writeTerminal(
-            "✅ Files mounted successfully.\r\n"
+            "Files mounted successfully.\r\n"
           );
 
           setLoadingState((prev) => ({
@@ -213,39 +221,56 @@ const WebContainerPreview = ({
           setCurrentStep(3);
 
           writeTerminal(
-            "📦 Installing dependencies...\r\n"
+            "\r\n========================================\r\n"
           );
+          writeTerminal("Installing dependencies...\r\n");
+          writeTerminal("Running: npm install --verbose\r\n");
+          writeTerminal(
+            "========================================\r\n"
+          );
+
+          console.log("[NPM] Starting npm install...");
+          console.log("[NPM] Current directory: /");
 
           const installProcess = await instance.spawn(
             "npm",
-            ["install"]
+            ["install", "--verbose"]
           );
 
-          // Stream installation output to terminal
+          // Capture npm output in both browser console and terminal
           const outputPromise = installProcess.output.pipeTo(
             new WritableStream({
               write(data) {
+                console.log("[NPM INSTALL]", data);
                 writeTerminal(data);
               },
             })
           );
 
-          // Wait for BOTH process completion and output stream completion
-          const [installExitCode] = await Promise.all([
-            installProcess.exit,
-            outputPromise,
-          ]);
+          // Wait for process and output stream
+          const installExitCode = await installProcess.exit;
+
+          await outputPromise;
+
+          console.log(
+            "[NPM] Installation exit code:",
+            installExitCode
+          );
+
+          writeTerminal(
+            `\r\nnpm install exited with code: ${installExitCode}\r\n`
+          );
 
           if (cancelled) return;
 
           if (installExitCode !== 0) {
             throw new Error(
-              `Failed to install dependencies. Exit code: ${installExitCode}. Check terminal output for the npm error.`
+              `Failed to install dependencies. Exit code: ${installExitCode}. Check [NPM INSTALL] logs in browser console.`
             );
           }
 
           writeTerminal(
-            "✅ Dependencies installed successfully!\r\n"
+            "Dependencies installed successfully!\r\n"
           );
         } else {
           setLoadingState((prev) => ({
@@ -268,10 +293,10 @@ const WebContainerPreview = ({
         setCurrentStep(4);
 
         writeTerminal(
-          "🚀 Starting development server...\r\n"
+          "\r\nStarting development server...\r\n"
         );
 
-        // Detect the appropriate start script
+        // Detect appropriate start script
         let packageJson: any;
 
         try {
@@ -302,7 +327,7 @@ const WebContainerPreview = ({
         }
 
         writeTerminal(
-          `▶ Running npm run ${startScript}...\r\n`
+          `Running npm run ${startScript}...\r\n`
         );
 
         // Listen before starting the process
@@ -312,7 +337,7 @@ const WebContainerPreview = ({
             if (cancelled) return;
 
             writeTerminal(
-              `🌐 Server ready on port ${port}: ${url}\r\n`
+              `Server ready on port ${port}: ${url}\r\n`
             );
 
             setPreviewUrl(url);
@@ -340,6 +365,7 @@ const WebContainerPreview = ({
           .pipeTo(
             new WritableStream({
               write(data) {
+                console.log("[DEV SERVER]", data);
                 writeTerminal(data);
               },
             })
@@ -351,7 +377,7 @@ const WebContainerPreview = ({
             );
           });
 
-        // Detect if the server exits unexpectedly
+        // Detect unexpected server exit
         startProcess.exit.then((exitCode) => {
           if (cancelled || exitCode === 0) return;
 
@@ -369,17 +395,21 @@ const WebContainerPreview = ({
       } catch (err) {
         if (cancelled) return;
 
-        console.error("Error setting up container:", err);
+        console.error(
+          "Error setting up container:",
+          err
+        );
 
         const errorMessage =
-          err instanceof Error ? err.message : String(err);
+          err instanceof Error
+            ? err.message
+            : String(err);
 
         writeTerminal(
-          `❌ Error: ${errorMessage}\r\n`
+          `\r\nERROR: ${errorMessage}\r\n`
         );
 
         setSetupError(errorMessage);
-
         isSetupInProgressRef.current = false;
 
         setLoadingState({
@@ -397,7 +427,6 @@ const WebContainerPreview = ({
     return () => {
       cancelled = true;
 
-      // Allow a new setup attempt if this effect is restarted.
       if (!isSetupComplete) {
         isSetupInProgressRef.current = false;
       }
@@ -463,6 +492,10 @@ const WebContainerPreview = ({
           <p className="text-sm">
             {error || setupError}
           </p>
+
+          <div className="mt-4 text-xs opacity-80">
+            Check the terminal output and browser console for the detailed npm error.
+          </div>
         </div>
       </div>
     );
@@ -523,7 +556,10 @@ const WebContainerPreview = ({
             <div className="space-y-4 mb-6">
               <div className="flex items-center gap-3">
                 {getStepIcon(1)}
-                {getStepText(1, "Transforming template data")}
+                {getStepText(
+                  1,
+                  "Transforming template data"
+                )}
               </div>
 
               <div className="flex items-center gap-3">
@@ -538,7 +574,10 @@ const WebContainerPreview = ({
 
               <div className="flex items-center gap-3">
                 {getStepIcon(4)}
-                {getStepText(4, "Starting development server")}
+                {getStepText(
+                  4,
+                  "Starting development server"
+                )}
               </div>
             </div>
           </div>

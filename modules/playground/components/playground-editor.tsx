@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useRef, useEffect, useCallback, useState } from "react"
@@ -44,9 +45,8 @@ export const PlaygroundEditor = ({
     id: string
   } | null>(null)
 
-  // Keep the latest props available to the provider without
-  // registering a new provider every time the suggestion changes.
   const suggestionRef = useRef<string | null>(suggestion)
+
   const suggestionPositionRef = useRef<{
     line: number
     column: number
@@ -71,13 +71,9 @@ export const PlaygroundEditor = ({
   const isAcceptingSuggestionRef = useRef(false)
   const suggestionAcceptedRef = useRef(false)
 
-  const suggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  )
+  const suggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const acceptedResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  )
+  const acceptedResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [editorReady, setEditorReady] = useState(false)
 
@@ -105,7 +101,7 @@ export const PlaygroundEditor = ({
   }, [])
 
   // --------------------------------------------------
-  // Check whether a suggestion is at the current cursor
+  // Check whether suggestion is at current cursor
   // --------------------------------------------------
 
   const hasActiveSuggestionAtPosition = useCallback(() => {
@@ -145,7 +141,6 @@ export const PlaygroundEditor = ({
       return false
     }
 
-    // Lock immediately to prevent duplicate acceptance
     isAcceptingSuggestionRef.current = true
     suggestionAcceptedRef.current = true
 
@@ -159,7 +154,6 @@ export const PlaygroundEditor = ({
         return false
       }
 
-      // Verify the cursor is still near the suggestion
       if (
         currentPosition.lineNumber !== suggestionPos.line ||
         currentPosition.column < suggestionPos.column ||
@@ -189,7 +183,6 @@ export const PlaygroundEditor = ({
         return false
       }
 
-      // Calculate where the cursor should end up
       const lines = cleanSuggestionText.split("\n")
 
       const endLine = suggestionPos.line + lines.length - 1
@@ -208,7 +201,6 @@ export const PlaygroundEditor = ({
 
       clearCurrentSuggestion()
 
-      // Notify parent
       onAcceptSuggestionRef.current(editor, monaco)
 
       return true
@@ -218,13 +210,13 @@ export const PlaygroundEditor = ({
     } finally {
       isAcceptingSuggestionRef.current = false
 
-      // Prevent accidental double acceptance briefly
       if (acceptedResetTimeoutRef.current) {
         clearTimeout(acceptedResetTimeoutRef.current)
       }
 
       acceptedResetTimeoutRef.current = setTimeout(() => {
         suggestionAcceptedRef.current = false
+        acceptedResetTimeoutRef.current = null
       }, 500)
     }
   }, [clearCurrentSuggestion])
@@ -242,7 +234,6 @@ export const PlaygroundEditor = ({
           context: any,
           token: any,
         ) => {
-          // Ignore canceled requests
           if (token?.isCancellationRequested) {
             return { items: [] }
           }
@@ -255,13 +246,9 @@ export const PlaygroundEditor = ({
           }
 
           const currentSuggestion = suggestionRef.current
-          const currentSuggestionPosition =
-            suggestionPositionRef.current
+          const currentSuggestionPosition = suggestionPositionRef.current
 
-          if (
-            !currentSuggestion ||
-            !currentSuggestionPosition
-          ) {
+          if (!currentSuggestion || !currentSuggestionPosition) {
             return { items: [] }
           }
 
@@ -277,7 +264,6 @@ export const PlaygroundEditor = ({
             return { items: [] }
           }
 
-          // Don't provide stale results if Monaco canceled this request
           if (token?.isCancellationRequested) {
             return { items: [] }
           }
@@ -324,14 +310,9 @@ export const PlaygroundEditor = ({
           }
         },
 
-        // REQUIRED by Monaco 0.55.1
-        // Replaces the old freeInlineCompletions method.
-        disposeInlineCompletions: (
-          completions: any,
-          reason: any,
-        ) => {
-          // No external resources are held by these completions.
-          // Monaco can safely dispose of them.
+        // Monaco 0.55.1 required cleanup method
+        freeInlineCompletions: (_completions: any) => {
+          // No external resources need to be released.
         },
       }
     },
@@ -340,9 +321,6 @@ export const PlaygroundEditor = ({
 
   // --------------------------------------------------
   // Register provider
-  //
-  // Provider is registered once per language rather than
-  // once per AI suggestion.
   // --------------------------------------------------
 
   useEffect(() => {
@@ -356,7 +334,6 @@ export const PlaygroundEditor = ({
       activeFile?.fileExtension || "",
     )
 
-    // Dispose previous provider if language changes
     if (inlineCompletionProviderRef.current) {
       inlineCompletionProviderRef.current.dispose()
       inlineCompletionProviderRef.current = null
@@ -381,8 +358,7 @@ export const PlaygroundEditor = ({
   }, [editorReady, activeFile, createInlineCompletionProvider])
 
   // --------------------------------------------------
-  // Trigger inline suggestion whenever the AI suggestion
-  // or its position updates.
+  // Trigger inline suggestion when AI suggestion updates
   // --------------------------------------------------
 
   useEffect(() => {
@@ -404,7 +380,6 @@ export const PlaygroundEditor = ({
 
     currentSuggestionRef.current = null
 
-    // Hide previous ghost text
     editor.trigger(
       "ai",
       "editor.action.inlineSuggest.hide",
@@ -429,7 +404,7 @@ export const PlaygroundEditor = ({
   }, [suggestion, suggestionPosition, clearCurrentSuggestion])
 
   // --------------------------------------------------
-  // Update editor language when file changes
+  // Update editor language
   // --------------------------------------------------
 
   const updateEditorLanguage = useCallback(() => {
@@ -499,10 +474,7 @@ export const PlaygroundEditor = ({
         },
       )
 
-      // --------------------------------------------------
       // Tab: accept inline suggestion
-      // --------------------------------------------------
-
       editor.addCommand(
         monaco.KeyCode.Tab,
         () => {
@@ -510,7 +482,6 @@ export const PlaygroundEditor = ({
             return
           }
 
-          // If already accepted, let Tab behave normally
           if (suggestionAcceptedRef.current) {
             editor.trigger("keyboard", "tab", null)
             return
@@ -527,16 +498,12 @@ export const PlaygroundEditor = ({
             }
           }
 
-          // Normal indentation
           editor.trigger("keyboard", "tab", null)
         },
         "editorTextFocus && !editorReadonly",
       )
 
-      // --------------------------------------------------
       // Escape: reject suggestion
-      // --------------------------------------------------
-
       editor.addCommand(monaco.KeyCode.Escape, () => {
         if (currentSuggestionRef.current) {
           onRejectSuggestionRef.current(editor)
@@ -544,15 +511,11 @@ export const PlaygroundEditor = ({
         }
       })
 
-      // --------------------------------------------------
       // Cursor position listener
-      // --------------------------------------------------
-
       editor.onDidChangeCursorPosition((e: any) => {
         if (isAcceptingSuggestionRef.current) return
 
         const newPosition = e.position
-
         const currentSuggestion = currentSuggestionRef.current
 
         if (
@@ -598,30 +561,23 @@ export const PlaygroundEditor = ({
         }
       })
 
-      // --------------------------------------------------
       // Content changes
-      // --------------------------------------------------
-
       editor.onDidChangeModelContent((e: any) => {
         if (isAcceptingSuggestionRef.current) {
           return
         }
 
-        // Clear any existing AI suggestion when the user types
         if (
           currentSuggestionRef.current &&
           e.changes.length > 0 &&
           !suggestionAcceptedRef.current
         ) {
           const change = e.changes[0]
-
-          const currentSuggestion =
-            currentSuggestionRef.current
+          const currentSuggestion = currentSuggestionRef.current
 
           const isOurInsertion =
             change.text === currentSuggestion.text ||
-            change.text ===
-              currentSuggestion.text.replace(/\r/g, "")
+            change.text === currentSuggestion.text.replace(/\r/g, "")
 
           if (!isOurInsertion) {
             clearCurrentSuggestion()
@@ -681,51 +637,31 @@ export const PlaygroundEditor = ({
   )
 
   // --------------------------------------------------
-  // Editor cleanup
-  // --------------------------------------------------
-
-  const handleEditorWillUnmount = useCallback(() => {
-    setEditorReady(false)
-
-    if (suggestionTimeoutRef.current) {
-      clearTimeout(suggestionTimeoutRef.current)
-      suggestionTimeoutRef.current = null
-    }
-
-    if (acceptedResetTimeoutRef.current) {
-      clearTimeout(acceptedResetTimeoutRef.current)
-      acceptedResetTimeoutRef.current = null
-    }
-
-    if (inlineCompletionProviderRef.current) {
-      inlineCompletionProviderRef.current.dispose()
-      inlineCompletionProviderRef.current = null
-    }
-
-    currentSuggestionRef.current = null
-
-    editorRef.current = null
-    monacoRef.current = null
-  }, [])
-
-  // --------------------------------------------------
-  // Component unmount cleanup
+  // Component cleanup
+  // No unsupported onUnmount prop is required.
   // --------------------------------------------------
 
   useEffect(() => {
     return () => {
       if (suggestionTimeoutRef.current) {
         clearTimeout(suggestionTimeoutRef.current)
+        suggestionTimeoutRef.current = null
       }
 
       if (acceptedResetTimeoutRef.current) {
         clearTimeout(acceptedResetTimeoutRef.current)
+        acceptedResetTimeoutRef.current = null
       }
 
       if (inlineCompletionProviderRef.current) {
         inlineCompletionProviderRef.current.dispose()
         inlineCompletionProviderRef.current = null
       }
+
+      currentSuggestionRef.current = null
+
+      editorRef.current = null
+      monacoRef.current = null
     }
   }, [])
 
@@ -735,7 +671,6 @@ export const PlaygroundEditor = ({
 
   return (
     <div className="h-full relative">
-      {/* AI loading indicator */}
       {suggestionLoading && (
         <div className="absolute top-2 right-2 z-10 bg-red-100 dark:bg-red-900 px-2 py-1 rounded text-xs text-red-700 dark:text-red-300 flex items-center gap-1">
           <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
@@ -743,7 +678,6 @@ export const PlaygroundEditor = ({
         </div>
       )}
 
-      {/* Suggestion indicator */}
       {suggestion && !suggestionLoading && (
         <div className="absolute top-2 right-2 z-10 bg-green-100 dark:bg-green-900 px-2 py-1 rounded text-xs text-green-700 dark:text-green-300 flex items-center gap-1">
           <div className="w-2 h-2 bg-green-500 rounded-full" />
@@ -756,7 +690,6 @@ export const PlaygroundEditor = ({
         value={content}
         onChange={(value) => onContentChangeRef.current(value || "")}
         onMount={handleEditorDidMount}
-        onUnmount={handleEditorWillUnmount}
         language={
           activeFile
             ? getEditorLanguage(activeFile.fileExtension || "")
